@@ -1,0 +1,127 @@
+slug: mamdani-nyc-2025
+subject_name: Zohran Mamdani
+subject_role: 112th Mayor of New York City (sworn in 2026-01-01)
+description: >
+  Real vs. false information circulating about Zohran Mamdani around the
+  November 2025 NYC mayoral election and his first months in office.
+
+window_start: 2025-10-01
+window_end:   2026-04-01
+
+# Hard ceiling. The pipeline stops mid-run rather than exceed it.
+# Sized to fit inside the Apify Free plan's $5/month of platform credits,
+# which do NOT roll over — so spend them within the billing month or lose them.
+budget_usd: 5.0
+
+# Used to flag whether an item is actually about the subject, and to build
+# the default mentions query when a tier lists no queries of its own.
+about_terms:
+  - Mamdani
+  - Zohran
+
+# --------------------------------------------------------------------------
+# Registered genuine accounts. This is the ground truth for attribution.
+#
+# platform_user_id is authoritative and beats handle matching, because handles
+# can be renamed or recycled. Leave it null on the first run — the pipeline
+# learns it from the first matching post and writes it back to the DB. After
+# that, re-read it from `subject_accounts` and paste it here for safety.
+#
+# valid_from / valid_until matter for OFFICE handles: @NYCMayor belonged to
+# Eric Adams until 2025-12-31, so posts from it before 2026-01-01 are NOT
+# this subject and are classified third_party with that reason recorded.
+# --------------------------------------------------------------------------
+accounts:
+  - platform: twitter
+    handle: ZohranKMamdani
+    role: personal
+    platform_user_id: "266980765"
+    source_url: https://x.com/ZohranKMamdani
+    note: >
+      Personal/political account confirmed by the user. user_id 266980765
+      verified via the actor on 2026-11-07 (display name "Zohran Kwame
+      Mamdani", bio "Mayor of New York City", ~1.79M followers, verified).
+
+  # Add more handles here as you confirm them — campaign, press secretary,
+  # staff — using role: campaign | staff. Add confirmed fakes as
+  # role: known_impersonator.
+  #
+  # Office handle. @NYCMayor belonged to Eric Adams until 2025-12-31, so
+  # valid_from keeps his posts out of this subject's attribution, and the
+  # planner does not query this handle before that date at all.
+  - platform: twitter
+    handle: NYCMayor
+    role: office
+    platform_user_id: "19834403"
+    valid_from: 2026-01-01
+    source_url: https://x.com/NYCMayor
+    note: >
+      Verified 2026-11-07: display name "Mayor Zohran Kwame Mamdani",
+      ~2.84M followers. After 2026-01-01 his official posting moved here;
+      @ZohranKMamdani drops to a handful of posts a month.
+
+# --------------------------------------------------------------------------
+# Collection tiers. Cost = (items returned / 1000) * price_per_1k.
+# Run `plan` to see the worst case; collection stops before exceeding budget_usd.
+# --------------------------------------------------------------------------
+tiers:
+  # Everything the subject's own accounts posted. Cheap and complete:
+  # from:-queries have no 3,200-post timeline ceiling. Weekly slices so that
+  # election weeks are not truncated; a warning is logged if any slice hits
+  # its cap. Retweets are excluded — the author field on a retweet is the
+  # retweeter, so they would otherwise be stored as "subject_own" words that
+  # someone else wrote.
+  subject_own:
+    enabled: true
+    slice: week
+    exclude_reposts: true
+    sort: Latest
+    max_items_per_slice: 300
+
+  # Everything everyone else posted. Unbounded in principle, so an engagement
+  # floor keeps it affordable. Raise min_faves to go cheaper and higher-signal;
+  # lower it to catch small coordinated accounts (which is often the point —
+  # astroturf networks have low per-post engagement, so run a second pass with
+  # min_faves removed over a narrow date range once you know where to look).
+  #
+  # 12-hour slices, Latest. The budget cannot cover every post, so short
+  # slices spread what it can buy evenly across each day. Do NOT use
+  # sort: Top here — X's Top tab ignores since_time/until_time (observed
+  # 2026-11-07: a 2025-10-01 query returned posts from 2026-11).
+  mentions:
+    enabled: true
+    slice: 12h
+    sort: Latest
+    min_faves: 25
+    max_items_per_slice: 40      # 364 slices x 40 = 14,560 items = $3.64 worst case
+    queries:
+      - (Mamdani OR @ZohranKMamdani) -filter:retweets
+
+  # Targeted queries for claim clusters you already know about, from
+  # fact-checks, Community Notes, or the AI Incident Database.
+  claims:
+    enabled: false
+    slice: month
+    max_items_per_slice: 250
+    queries:
+      - (Mamdani) (AI OR deepfake OR "AI-generated" OR fake)
+      - (Mamdani) ("Citizens Against Mamdani")
+      - (Mamdani) (Spanish OR Mandarin OR Bengali) (AI OR fake)
+
+# --------------------------------------------------------------------------
+# Platform-specific settings
+# --------------------------------------------------------------------------
+platforms:
+  twitter:
+    # Cheap, pay-per-event, works on the Apify Free plan's $5 credits.
+    actor_id: jacquemus/x-tweet-scraper
+    price_per_1k: 0.25    # raised from $0.10 on 2026-09-15 (actor pricing page)
+
+    # Mature alternative — needs a paid Apify plan (API is blocked on Free)
+    # and enforces a 50-tweet minimum per query, which breaks thin slices.
+    # actor_id: apidojo/tweet-scraper
+    # price_per_1k: 0.40
+
+    sort: Latest        # Latest = chronological; Top = engagement-ranked
+    # language: en      # uncomment to append lang:en to every query
+    timeout_secs: 900

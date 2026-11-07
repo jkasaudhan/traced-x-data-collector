@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Evidence Viewer</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/overview">
+        <span class="brand-mark" aria-hidden="true">◎</span>
+        <span>
+          <span class="brand-title">Evidence Viewer</span>
+          <span class="brand-sub" id="brand-sub">loading…</span>
+        </span>
+      </a>
+      <nav class="tabs" aria-label="Views">
+        <a href="#/overview" data-view="overview">Overview</a>
+        <a href="#/compare" data-view="compare">Compare</a>
+        <a href="#/explore" data-view="explore">Explore</a>
+      </nav>
+      <span class="db-pill" id="db-pill" title="Database this viewer reads from"></span>
+    </div>
+  </header>
+
+  <main id="view" class="container" tabindex="-1"></main>
+
+  <div class="modal" id="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <button class="modal-close" data-close aria-label="Close">×</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <template id="tpl-overview">
+    <section class="hero">
+      <div class="hero-text">
+        <h1 id="ov-title"></h1>
+        <p id="ov-role" class="muted"></p>
+        <p id="ov-desc"></p>
+        <p class="muted small" id="ov-window"></p>
+      </div>
+      <div class="accounts" id="ov-accounts"></div>
+    </section>
+
+    <section class="kpis" id="ov-kpis"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Posts per day</h2>
+        <div class="legend">
+          <span><i class="sw sw-real"></i>Real — subject's accounts</span>
+          <span><i class="sw sw-other"></i>Other accounts</span>
+        </div>
+      </div>
+      <p class="muted small">Click a day to compare what the subject posted with what others posted that day.</p>
+      <div id="ov-chart" class="chart"></div>
+    </section>
+
+    <div class="grid-2">
+      <section class="panel">
+        <div class="panel-head"><h2>Most-viewed posts by other accounts</h2>
+          <a class="link" href="#/explore?side=others&sort=views">See all →</a></div>
+        <div id="ov-top-others" class="stack"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Other accounts with the most reach</h2></div>
+        <p class="muted small">Total views of their posts in this dataset. Click to see their posts.</p>
+        <ol id="ov-authors" class="author-list"></ol>
+      </section>
+    </div>
+  </template>
+
+  <template id="tpl-compare">
+    <form class="filters" id="cmp-form">
+      <input type="search" name="q" placeholder="Search text or account… e.g. rent freeze, ICE, @handle" aria-label="Search">
+      <label>From <input type="date" name="start"></label>
+      <label>To <input type="date" name="end"></label>
+      <select name="media" aria-label="Media">
+        <option value="any">Any media</option>
+        <option value="with">With media</option>
+        <option value="photo">Photos</option>
+        <option value="video">Videos</option>
+        <option value="none">Text only</option>
+      </select>
+      <select name="sort" aria-label="Sort">
+        <option value="recent">Newest</option>
+        <option value="oldest">Oldest</option>
+        <option value="views">Most viewed</option>
+        <option value="likes">Most liked</option>
+        <option value="reposts">Most reposted</option>
+      </select>
+      <button type="submit" class="btn">Apply</button>
+      <button type="button" class="btn btn-ghost" data-reset>Reset</button>
+    </form>
+    <div class="notice">
+      <strong>How to read this.</strong> The left column is <em>only</em> what the subject's verified
+      accounts posted (matched by account ID, not by name). The right column is everything else
+      that mentions them. A post on the right is <em>not automatically false</em> — check whether
+      its claims match what the subject actually said, then open it on X to verify.
+    </div>
+    <div class="columns">
+      <section class="col col-real">
+        <header class="col-head">
+          <span class="badge badge-real">✓ Real</span>
+          <span>Posted by the subject's verified accounts</span>
+          <span class="count" id="cmp-real-count"></span>
+        </header>
+        <div class="stack" id="cmp-real"></div>
+        <button class="btn btn-ghost more" id="cmp-real-more" hidden>Load more</button>
+      </section>
+      <section class="col col-others">
+        <header class="col-head">
+          <span class="badge badge-other">Others</span>
+          <span>Posted by other accounts — verify before trusting</span>
+          <span class="count" id="cmp-others-count"></span>
+        </header>
+        <div class="stack" id="cmp-others"></div>
+        <button class="btn btn-ghost more" id="cmp-others-more" hidden>Load more</button>
+      </section>
+    </div>
+  </template>
+
+  <template id="tpl-explore">
+    <form class="filters" id="exp-form">
+      <input type="search" name="q" placeholder="Search text or account…" aria-label="Search">
+      <select name="side" aria-label="Source">
+        <option value="all">All sources</option>
+        <option value="real">Real (subject's accounts)</option>
+        <option value="others">Other accounts</option>
+      </select>
+      <select name="kind" aria-label="Post type">
+        <option value="">All post types</option>
+        <option value="original">Original posts</option>
+        <option value="reply">Replies</option>
+        <option value="quote">Quotes</option>
+      </select>
+      <select name="media" aria-label="Media">
+        <option value="any">Any media</option>
+        <option value="with">With media</option>
+        <option value="photo">Photos</option>
+        <option value="video">Videos</option>
+        <option value="none">Text only</option>
+      </select>
+      <label>From <input type="date" name="start"></label>
+      <label>To <input type="date" name="end"></label>
+      <select name="sort" aria-label="Sort">
+        <option value="recent">Newest</option>
+        <option value="oldest">Oldest</option>
+        <option value="views">Most viewed</option>
+        <option value="likes">Most liked</option>
+        <option value="reposts">Most reposted</option>
+        <option value="replies">Most replied</option>
+      </select>
+      <input type="hidden" name="author">
+      <button type="submit" class="btn">Apply</button>
+      <button type="button" class="btn btn-ghost" data-reset>Reset</button>
+    </form>
+    <div id="exp-author" class="author-filter" hidden></div>
+    <p class="muted" id="exp-count"></p>
+    <div class="feed" id="exp-feed"></div>
+    <button class="btn btn-ghost more" id="exp-more" hidden>Load more</button>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

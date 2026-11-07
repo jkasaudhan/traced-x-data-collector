@@ -1,0 +1,28 @@
+# Secrets — APIFY_TOKEN, DATABASE_URL_CLOUD (Supabase password), NGROK_AUTHTOKEN.
+# .env.example is the committed template.
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Collector output — exported case data
+out.jsonl
+*.jsonl
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log
