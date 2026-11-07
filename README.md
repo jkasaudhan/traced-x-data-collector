@@ -63,6 +63,9 @@ make collect          collect the subject's own posts
 make collect-mentions collect what everyone else posted
 make status           per-attribution counts and spend so far
 make export           dump the case to out.jsonl
+make dump             dump the local disinfo database to dumps/
+make restore DUMP=…   restore a dump into an empty database
+make sqlite           export the local disinfo database to a SQLite file
 make init-cloud       create the tables on Supabase
 make copy             promote the case local -> Supabase
 make test             run the tests
@@ -84,6 +87,10 @@ requirements-dev.txt  the above plus pytest
 .env.example          copy to .env
 schema.sql            the database schema
 scripts/ensure_db.py  creates the database if it does not exist
+scripts/dump_db.sh    dump the local disinfo database (portable plain SQL, gzipped)
+scripts/restore_db.sh restore a dump into an empty database
+scripts/export_sqlite.py  export the local disinfo database to SQLite
+dumps/                database dumps + .txt manifest (row counts, sha256)
 cases/mamdani.yaml    the case definition — one file per subject
 collector/            the package
 tests/                stubbed end-to-end tests, no Apify calls
@@ -196,6 +203,113 @@ Once you trust the pipeline you can skip the local step:
 Budget spent is tracked per database, so a case collected partly locally
 and partly in the cloud has its spend split across both — copy first if you
 want the cloud's budget guard to see everything.
+
+## Sharing the dataset (dump and restore)
+
+The collected data ships as one file: `dumps/disinfo-<date>.sql.gz`, a
+gzipped plain-SQL dump of the local `disinfo` database (schema, data,
+indexes), with a `.txt` manifest beside it listing row counts and a sha256.
+Nobody needs an Apify token or Supabase access to use it.
+
+### Make a dump
+
+```bash
+make dump        # = scripts/dump_db.sh
+```
+
+It refuses to run if `DATABASE_URL_LOCAL` does not point at `disinfo`. The
+dump is plain SQL with `--no-owner --no-privileges`, and the `\restrict` /
+`SET transaction_timeout` lines that pg_dump 17+ adds are stripped, so it
+restores into any Postgres 13 or newer with any psql.
+
+### Restore it (for whoever receives the file)
+
+Needs a running Postgres 13+ and `psql`, and nothing else from this repo
+except the script (or not even that — see "by hand" below).
+
+```bash
+# into postgresql://postgres:postgres@localhost:5432/disinfo (created if missing)
+scripts/restore_db.sh dumps/disinfo-20261107.sql.gz
+
+# or anywhere else
+scripts/restore_db.sh dumps/disinfo-20261107.sql.gz postgresql://me:secret@localhost:5432/disinfo
+
+# same via make
+make restore DUMP=dumps/disinfo-20261107.sql.gz
+```
+
+The script verifies the checksum against the manifest, creates the database
+if needed, refuses to restore over a database that already has the tables,
+loads everything in a single transaction (all or nothing) and prints the row
+counts to compare with the manifest.
+
+**By hand**, with only psql:
+
+```bash
+createdb disinfo
+gunzip -c disinfo-20261107.sql.gz | psql -v ON_ERROR_STOP=1 --single-transaction -d disinfo
+psql -d disinfo -c "select attribution, count(*) from content_items group by 1"
+```
+
+**No Postgres installed?** One throwaway container is enough:
+
+```bash
+docker run -d --name disinfo-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=disinfo -p 5432:5432 postgres:17
+gunzip -c disinfo-20261107.sql.gz | docker exec -i disinfo-db psql -U postgres -d disinfo -v ON_ERROR_STOP=1 --single-transaction
+```
+
+Then point `DATABASE_URL_LOCAL` at it and `make web` to browse it in the
+evidence viewer.
+
+### SQLite copy (no database server needed)
+
+For people who just want to open the data — in DB Browser for SQLite,
+Datasette, DuckDB, pandas, or the `sqlite3` CLI — the same database is also
+exported as one SQLite file:
+
+```bash
+make sqlite      # -> dumps/disinfo-<date>.sqlite (~40 MB)
+```
+
+Share `dumps/disinfo-<date>.sqlite` as is — it is a normal SQLite database,
+usable directly with no import step:
+
+```bash
+sqlite3 dumps/disinfo-20261107.sqlite
+```
+
+Same tables and columns as Postgres. Timestamps are ISO-8601 UTC text,
+booleans are 0/1, `raw`/`labels`/`config` are JSON text (use `json_extract`).
+Extras inside the file:
+
+- `v_posts` — one row per post with author fields and `is_real`
+  (1 = posted by the subject's registered accounts).
+- `posts_fts` — full-text search over post text and author, stemmed
+  (`freeze` also finds `freezes`).
+- `export_info` — when it was exported, row counts, and what each
+  attribution label means.
+
+```sql
+-- real vs. others
+SELECT is_real, count(*) FROM v_posts GROUP BY 1;
+
+-- most-viewed posts by other accounts
+SELECT author_handle, view_count, url, substr(text, 1, 80)
+FROM v_posts WHERE is_real = 0 ORDER BY view_count DESC LIMIT 10;
+
+-- search, then show who posted it
+SELECT p.is_real, p.author_handle, p.posted_at, p.url
+FROM posts_fts f JOIN v_posts p ON p.id = f.item_id
+WHERE posts_fts MATCH '"rent freeze"' ORDER BY p.posted_at;
+
+-- a field from the original scraper JSON
+SELECT json_extract(raw, '$.author.username'), json_extract(raw, '$.urls')
+FROM content_items LIMIT 5;
+```
+
+The exporter checks foreign keys and SQLite integrity before replacing the
+output file, and writes to a temp file first so a failed run never leaves a
+half-written database behind.
 
 ## Use
 

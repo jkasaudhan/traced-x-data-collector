@@ -20,6 +20,9 @@ htmlcov/
 out.jsonl
 *.jsonl
 
+# Half-written SQLite export (the finished .sqlite is meant to be shared)
+dumps/*.sqlite.tmp
+
 # OS / editors
 .DS_Store
 .idea/

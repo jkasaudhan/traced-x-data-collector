@@ -1,0 +1,10 @@
+file:    disinfo-20261107.sql.gz
+created: 2026-11-07T15:21:10Z from the local disinfo database
+sha256:  a463a1cbf3851ab61da572fff4b3fafeeb7def871776dafde70bf2263ea5a1a8
+rows:
+  cases             1
+  subject_accounts  2
+  collection_runs   223
+  authors           4219
+  content_items     8130
+  media_assets      4273

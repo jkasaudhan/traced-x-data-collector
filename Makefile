@@ -7,7 +7,7 @@ CLI  := $(PY) -m collector.cli
 PSQL ?= $(shell command -v psql || echo /Applications/Postgres.app/Contents/Versions/latest/bin/psql)
 
 .PHONY: help setup build psql init init-cloud test check plan \
-        collect collect-mentions status export copy web web-cloud clean
+        collect collect-mentions status export copy dump restore sqlite web web-cloud clean
 
 help:  ## show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -53,6 +53,16 @@ export:  ## dump the case to out.jsonl in this directory
 
 copy:  ## promote the case from local to Supabase
 	$(CLI) copy $(CASE) --from local --to cloud
+
+dump:  ## dump the local disinfo database to dumps/disinfo-<date>.sql.gz
+	@scripts/dump_db.sh
+
+sqlite:  ## export the local disinfo database to dumps/disinfo-<date>.sqlite
+	@$(PY) scripts/export_sqlite.py
+
+restore:  ## restore a dump: make restore DUMP=dumps/x.sql.gz [URL=postgresql://...]
+	@[ -n "$(DUMP)" ] || { echo "usage: make restore DUMP=dumps/disinfo-YYYYMMDD.sql.gz [URL=...]"; exit 2; }
+	@scripts/restore_db.sh "$(DUMP)" $(URL)
 
 web:  ## run the evidence viewer on http://127.0.0.1:8000 (local DB)
 	@[ -x webapp/.venv/bin/python ] || (cd webapp && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt)
