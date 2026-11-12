@@ -49,6 +49,24 @@ Connection strings come from the collector's `../.env`
 (`DATABASE_URL_LOCAL`, `DATABASE_URL_CLOUD`). Every connection is opened
 read-only and all timestamps are served in UTC.
 
+## Docker / Render
+
+`Dockerfile` builds a container that reads from Supabase (`WEBAPP_DB=cloud`).
+It takes the connection string from the `DATABASE_URL_CLOUD` environment
+variable and listens on `$PORT` (default 8000):
+
+```bash
+docker build -t evidence-viewer webapp
+docker run -p 8000:8000 -e DATABASE_URL_CLOUD=postgresql://... evidence-viewer
+```
+
+On Render, create a Web Service from this repository with:
+- Language: Docker
+- Root Directory: `webapp`
+- Dockerfile Path: `./Dockerfile`
+- Environment variable: `DATABASE_URL_CLOUD`
+- Health Check Path: `/api/meta`
+
 ## API
 
 ```
