@@ -67,10 +67,13 @@ make dump             dump the local disinfo database to dumps/
 make restore DUMP=…   restore a dump into an empty database
 make sqlite           export the local disinfo database to a SQLite file
 make init-cloud       create the tables on Supabase
-make copy             promote the case local -> Supabase
+make copy             promote the case local -> Supabase (insert-only)
+make sync             make Supabase match local, incl. analytics_* (updates rows)
+make sync-dry         show what sync would change
 make test             run the tests
 make web              evidence viewer on :8000 (see webapp/README.md)
 make web-cloud        same, reading from Supabase
+make stop             stop the evidence viewer
 make clean            remove caches
 ```
 
@@ -90,6 +93,7 @@ scripts/ensure_db.py  creates the database if it does not exist
 scripts/dump_db.sh    dump the local disinfo database (portable plain SQL, gzipped)
 scripts/restore_db.sh restore a dump into an empty database
 scripts/export_sqlite.py  export the local disinfo database to SQLite
+scripts/sync_cloud.py full local -> Supabase sync (upsert; mirrors analytics_*)
 dumps/                database dumps + .txt manifest (row counts, sha256)
 cases/mamdani.yaml    the case definition — one file per subject
 collector/            the package
@@ -191,6 +195,34 @@ SQL="select 'content_items', count(*) from content_items
      order by 1"
 diff <(psql "$DATABASE_URL_LOCAL" -Atc "$SQL") <(psql "$DATABASE_URL_CLOUD" -Atc "$SQL") && echo IDENTICAL
 ```
+
+### 6. Keep Supabase in sync (including analytics)
+
+`copy` only inserts rows the cloud does not have. Once rows change locally —
+or once `../content-analytics` has written its `analytics_*` tables — use
+`sync`, which makes Supabase match local:
+
+```bash
+# once: create the analytics tables on Supabase with content-analytics' own schema
+cd ../content-analytics && DATABASE_URL="$DATABASE_URL_CLOUD" uv run content-analytics init-db && cd -
+
+make sync-dry    # what would change; writes nothing
+make sync        # apply
+```
+
+| tables | how |
+|---|---|
+| `cases`, `subject_accounts`, `collection_runs`, `authors`, `content_items`, `media_assets` | upsert by primary key — new rows inserted, changed rows updated; rows only on the cloud are reported and kept |
+| `analytics_runs`, `analytics_thresholds`, `analytics_content_labels`, `analytics_harassment_bursts`, `analytics_subject_daily`, `analytics_profile_summary`, `analytics_alerts` | mirrored — upsert, then cloud rows that no longer exist locally are deleted (derived data; local is the source of truth); serial sequences advanced |
+
+It runs in a single transaction on Supabase, so a failure leaves the cloud
+untouched, and it refuses to run if a table's columns differ between the two
+sides. Re-running when nothing changed reports zero inserts/updates/deletes.
+
+When comparing the two databases by hand, set `timezone = 'UTC'` and
+`extra_float_digits = 1` on both connections: Supabase defaults to
+`extra_float_digits = 0`, so `real` columns print with fewer digits there
+even though the stored values are identical.
 
 ### Collecting straight into Supabase
 

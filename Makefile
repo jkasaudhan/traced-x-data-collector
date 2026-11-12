@@ -7,7 +7,7 @@ CLI  := $(PY) -m collector.cli
 PSQL ?= $(shell command -v psql || echo /Applications/Postgres.app/Contents/Versions/latest/bin/psql)
 
 .PHONY: help setup build psql init init-cloud test check plan \
-        collect collect-mentions status export copy dump restore sqlite web web-cloud clean
+        collect collect-mentions status export copy sync sync-dry dump restore sqlite web web-cloud stop clean
 
 help:  ## show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -54,6 +54,12 @@ export:  ## dump the case to out.jsonl in this directory
 copy:  ## promote the case from local to Supabase
 	$(CLI) copy $(CASE) --from local --to cloud
 
+sync:  ## make Supabase match local: collector + analytics_* tables (updates too)
+	$(PY) scripts/sync_cloud.py
+
+sync-dry:  ## show what `make sync` would change, write nothing
+	$(PY) scripts/sync_cloud.py --dry-run
+
 dump:  ## dump the local disinfo database to dumps/disinfo-<date>.sql.gz
 	@scripts/dump_db.sh
 
@@ -71,6 +77,9 @@ web:  ## run the evidence viewer on http://127.0.0.1:8000 (local DB)
 web-cloud:  ## run the evidence viewer against Supabase
 	@[ -x webapp/.venv/bin/python ] || (cd webapp && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt)
 	cd webapp && .venv/bin/python -m app.main --db cloud
+
+stop:  ## stop a running evidence viewer (make web / web-cloud)
+	@pkill -f '[.]venv/bin/python -m app[.]main' && echo "evidence viewer stopped" || echo "evidence viewer is not running"
 
 clean:  ## remove local caches
 	rm -rf .pytest_cache **/__pycache__ __pycache__
