@@ -20,6 +20,7 @@
         <a href="#/overview" data-view="overview">Overview</a>
         <a href="#/compare" data-view="compare">Compare</a>
         <a href="#/explore" data-view="explore">Explore</a>
+        <a href="#/analytics" data-view="analytics" id="tab-analytics" hidden>Analytics</a>
       </nav>
       <span class="db-pill" id="db-pill" title="Database this viewer reads from"></span>
     </div>
@@ -147,6 +148,14 @@
       </select>
       <label>From <input type="date" name="start"></label>
       <label>To <input type="date" name="end"></label>
+      <select name="category" aria-label="Content label" data-analytics hidden>
+        <option value="">Any content label</option>
+        <option value="any">Flagged (any category)</option>
+        <option value="disinformation">Disinformation</option>
+        <option value="racism">Racism</option>
+        <option value="hate_speech">Hate speech</option>
+        <option value="harassment">Harassment</option>
+      </select>
       <select name="sort" aria-label="Sort">
         <option value="recent">Newest</option>
         <option value="oldest">Oldest</option>
@@ -163,6 +172,94 @@
     <p class="muted" id="exp-count"></p>
     <div class="feed" id="exp-feed"></div>
     <button class="btn btn-ghost more" id="exp-more" hidden>Load more</button>
+  </template>
+
+  <template id="tpl-analytics">
+    <section class="hero">
+      <div class="hero-text">
+        <h1>Content analysis</h1>
+        <p class="muted" id="an-sub"></p>
+      </div>
+    </section>
+
+    <div class="notice">
+      <strong>How to read this.</strong> Each post by another account was scored by an LLM
+      (Claude) plus fixed rules for disinformation, racism, hate speech and harassment. A post gets
+      a label when its score reaches the threshold. Labels show <em>where to look first</em>; they
+      are not findings. Open the post to see the score, the model's reasoning and the subject
+      posts its claims were checked against.
+    </div>
+
+    <section class="kpis" id="an-kpis"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Labelled posts by other accounts, per day</h2>
+        <div class="legend" id="an-legend"></div>
+      </div>
+      <p class="muted small">One post can carry several labels, so a stack can be taller than the
+        number of posts. <span class="mark-key warning">▲</span> marks a day that crossed an alert
+        threshold (<span class="mark-key critical">▲</span> critical). Click a day to see its labelled posts.</p>
+      <div id="an-chart" class="chart"></div>
+      <details class="table-view">
+        <summary>Show as table</summary>
+        <div class="table-wrap" id="an-daily-table"></div>
+      </details>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Alerts</h2>
+        <form class="inline-filters" id="an-alert-form">
+          <select name="scope" aria-label="Alert scope">
+            <option value="">Days and accounts</option>
+            <option value="subject">Days (posts about the subject)</option>
+            <option value="profile">Accounts</option>
+          </select>
+          <select name="category" aria-label="Alert category">
+            <option value="">All categories</option>
+            <option value="disinformation">Disinformation</option>
+            <option value="racism">Racism</option>
+            <option value="hate_speech">Hate speech</option>
+            <option value="harassment">Harassment</option>
+          </select>
+          <select name="severity" aria-label="Alert severity">
+            <option value="">All severities</option>
+            <option value="critical">Critical</option>
+            <option value="warning">Warning</option>
+          </select>
+        </form>
+      </div>
+      <p class="muted small">Raised when a day or an account goes over a configured count or rate
+        (<code>thresholds.json</code> in content-analytics). Example posts open in the post viewer.</p>
+      <div class="table-wrap" id="an-alerts"></div>
+      <button class="btn btn-ghost more" id="an-alerts-more" hidden>Show more</button>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Accounts with the most labelled posts</h2>
+        <select id="an-profile-cat" class="plain-select" aria-label="Rank accounts by">
+          <option value="any">Ranked by all labels</option>
+          <option value="disinformation">Ranked by disinformation</option>
+          <option value="racism">Ranked by racism</option>
+          <option value="hate_speech">Ranked by hate speech</option>
+          <option value="harassment">Ranked by harassment</option>
+        </select>
+      </div>
+      <p class="muted small">Each cell shows labelled posts and their share of the account's posts
+        in this dataset. Click an account to see its labelled posts.</p>
+      <div class="table-wrap" id="an-profiles"></div>
+      <button class="btn btn-ghost more" id="an-profiles-more" hidden>Load more</button>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Posting bursts</h2></div>
+      <p class="muted small">Harassment needs volume. These are runs where one account kept posting
+        at the same target: at least 4 posts in 60 minutes (burst) or at least 6 replies in 24 hours
+        (continuous replies). A burst alone is not harassment. Look at the abuse score of its posts.</p>
+      <div class="table-wrap" id="an-bursts"></div>
+    </section>
   </template>
 
   <script src="/static/app.js"></script>

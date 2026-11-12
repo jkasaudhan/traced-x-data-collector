@@ -33,6 +33,15 @@ Side = Literal["all", "real", "others"]
 Sort = Literal["recent", "oldest", "likes", "views", "reposts", "replies"]
 MediaFilter = Literal["any", "with", "photo", "video", "none"]
 
+# Content-analytics labels (written by ../content-analytics into analytics_*).
+# Optional: every analytics feature switches off when the tables are absent.
+CATEGORIES = ("disinformation", "racism", "hate_speech", "harassment")
+Category = Literal["any", "disinformation", "racism", "hate_speech", "harassment"]
+ANALYTICS_TABLES = ["analytics_content_labels", "analytics_subject_daily",
+                    "analytics_profile_summary", "analytics_alerts",
+                    "analytics_harassment_bursts", "analytics_runs", "analytics_thresholds"]
+ANY_FLAG = "(" + " OR ".join(f"l.is_{c}" for c in CATEGORIES) + ")"
+
 SORT_SQL = {
     "recent": "ci.posted_at DESC NULLS LAST",
     "oldest": "ci.posted_at ASC NULLS LAST",
@@ -53,6 +62,7 @@ SELECT
     ci.view_count, ci.bookmark_count,
     ci.is_reply, ci.is_repost, ci.is_quote, ci.parent_item_id, ci.conversation_id,
     ci.mentions_subject,
+    {label} AS category,
     jsonb_build_object(
         'id', a.id, 'handle', a.handle, 'name', a.display_name,
         'description', a.description, 'followers', a.followers_count,
@@ -68,6 +78,19 @@ SELECT
 FROM content_items ci
 LEFT JOIN authors a ON a.id = ci.author_id
 """
+
+
+def _item_select() -> str:
+    """ITEM_SELECT plus the post's primary content label, when analytics exist."""
+    label = ("(SELECT l.primary_category FROM analytics_content_labels l "
+             "WHERE l.content_item_id = ci.id AND l.primary_category <> 'none')"
+             if app.state.analytics else "NULL::text")
+    return ITEM_SELECT.replace("{label}", label)
+
+
+def _require_analytics() -> None:
+    if not app.state.analytics:
+        raise HTTPException(404, "analytics tables are not present in this database")
 
 
 def _case_id(slug: Optional[str]) -> UUID:
@@ -88,7 +111,8 @@ def _side_clause(side: Side) -> tuple[str, list[Any]]:
 
 def _filters(case_id: UUID, *, side: Side, q: Optional[str], start: Optional[date],
              end: Optional[date], media: MediaFilter, author: Optional[str],
-             attribution: Optional[str], kind: Optional[str]) -> tuple[str, list[Any]]:
+             attribution: Optional[str], kind: Optional[str],
+             category: Optional[str] = None) -> tuple[str, list[Any]]:
     where = ["ci.case_id = %s"]
     params: list[Any] = [case_id]
 
@@ -124,6 +148,12 @@ def _filters(case_id: UUID, *, side: Side, q: Optional[str], start: Optional[dat
     elif kind == "quote":
         where.append("ci.is_quote")
 
+    if category:
+        _require_analytics()
+        flag = ANY_FLAG if category == "any" else f"l.is_{category}"   # whitelisted by Category
+        where.append("EXISTS (SELECT 1 FROM analytics_content_labels l "
+                     f"WHERE l.content_item_id = ci.id AND {flag})")
+
     has_media = "EXISTS (SELECT 1 FROM media_assets m WHERE m.content_item_id = ci.id{})"
     if media == "with":
         where.append(has_media.format(""))
@@ -154,6 +184,10 @@ def _shape(row: dict[str, Any]) -> dict[str, Any]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     app.state.db_host = db.init_pool(os.getenv("WEBAPP_DB"))
+    app.state.analytics = db.fetch_one(
+        "SELECT count(*) = %s AS ok FROM pg_tables "
+        "WHERE schemaname = 'public' AND tablename = ANY(%s)",
+        (len(ANALYTICS_TABLES), ANALYTICS_TABLES))["ok"]
     yield
     db.close_pool()
 
@@ -196,7 +230,7 @@ def meta(case: Optional[str] = None) -> dict[str, Any]:
     return {
         "case": c, "accounts": accounts, "by_attribution": by_attr,
         "totals": {**totals, "real": real, "others": totals["items"] - real},
-        "media": media, "database": app.state.db_host,
+        "media": media, "database": app.state.db_host, "analytics": app.state.analytics,
     }
 
 
@@ -226,25 +260,27 @@ def items(
     author: Optional[str] = None,
     attribution: Optional[str] = None,
     kind: Optional[Literal["original", "reply", "quote"]] = None,
+    category: Optional[Category] = None,
     sort: Sort = "recent",
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     cid = _case_id(case)
     where, params = _filters(cid, side=side, q=q, start=start, end=end, media=media,
-                             author=author, attribution=attribution, kind=kind)
+                             author=author, attribution=attribution, kind=kind,
+                             category=category)
     total = db.fetch_one(
         f"SELECT count(*)::int AS n FROM content_items ci "
         f"LEFT JOIN authors a ON a.id = ci.author_id WHERE {where}", params)["n"]
     rows = db.fetch_all(
-        f"{ITEM_SELECT} WHERE {where} ORDER BY {SORT_SQL[sort]}, ci.id LIMIT %s OFFSET %s",
+        f"{_item_select()} WHERE {where} ORDER BY {SORT_SQL[sort]}, ci.id LIMIT %s OFFSET %s",
         [*params, limit, offset])
     return {"total": total, "items": [_shape(r) for r in rows]}
 
 
 @app.get("/api/items/{item_id}")
 def item(item_id: UUID) -> dict[str, Any]:
-    row = db.fetch_one(f"{ITEM_SELECT} WHERE ci.id = %s", (item_id,))
+    row = db.fetch_one(f"{_item_select()} WHERE ci.id = %s", (item_id,))
     if not row:
         raise HTTPException(404, "item not found")
     row = _shape(row)
@@ -255,7 +291,7 @@ def item(item_id: UUID) -> dict[str, Any]:
     parent = None
     if row["parent_item_id"]:
         p = db.fetch_one(
-            f"{ITEM_SELECT} WHERE ci.platform_item_id = %s AND ci.case_id = "
+            f"{_item_select()} WHERE ci.platform_item_id = %s AND ci.case_id = "
             f"(SELECT case_id FROM content_items WHERE id = %s)",
             (row["parent_item_id"], item_id))
         parent = _shape(p) if p else None
@@ -263,7 +299,7 @@ def item(item_id: UUID) -> dict[str, Any]:
     # Other posts in the same thread, or quoting this one. For a real post
     # this is "how other accounts reacted to it".
     reactions = [_shape(r) for r in db.fetch_all(
-        f"""{ITEM_SELECT}
+        f"""{_item_select()}
             WHERE ci.case_id = (SELECT case_id FROM content_items WHERE id = %s)
               AND ci.id <> %s
               AND (ci.parent_item_id = %s
@@ -271,7 +307,31 @@ def item(item_id: UUID) -> dict[str, Any]:
             ORDER BY ci.like_count DESC NULLS LAST LIMIT 30""",
         (item_id, item_id, row["platform_item_id"],
          row["conversation_id"], row["conversation_id"]))]
-    return {"item": row, "parent": parent, "reactions": reactions}
+    return {"item": row, "parent": parent, "reactions": reactions,
+            "analysis": _analysis(item_id) if app.state.analytics else None}
+
+
+def _analysis(item_id: UUID) -> Optional[dict[str, Any]]:
+    """The post's content label, the thresholds it was judged against, and the
+    subject posts the model was shown as ground truth."""
+    label = db.fetch_one(
+        """SELECT status, primary_category, disinfo_verdict, claim_summary, rationale,
+                  hate_speech_basis, racism_target, harassment_target, harassment_volume,
+                  disinformation, racism, hate_speech, harassment,
+                  is_disinformation, is_racism, is_hate_speech, is_harassment,
+                  reference_item_ids, model, prompt_version, classified_at
+           FROM analytics_content_labels WHERE content_item_id = %s""", (item_id,))
+    if not label:
+        return None
+    thresholds = {r["category"]: r["score"] for r in db.fetch_all(
+        """SELECT category, (config->>'score')::real AS score
+           FROM analytics_thresholds WHERE scope = 'label'""")}
+    refs = label.pop("reference_item_ids") or []
+    label["references"] = [_shape(r) for r in db.fetch_all(
+        f"{_item_select()} WHERE ci.id = ANY(%s) ORDER BY ci.posted_at DESC LIMIT 5",
+        (refs,))] if refs else []
+    label["thresholds"] = thresholds
+    return label
 
 
 @app.get("/api/top-authors")
@@ -289,6 +349,156 @@ def top_authors(case: Optional[str] = None, side: Side = "others",
             WHERE ci.case_id = %s AND {clause}
             GROUP BY a.id ORDER BY views DESC LIMIT %s""",
         [cid, *p, limit])
+    for r in rows:
+        if r.get("avatar"):
+            r["avatar"] = r["avatar"].replace("_normal.", "_bigger.")
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# analytics (read from the analytics_* tables written by content-analytics)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/analytics/summary")
+def analytics_summary(case: Optional[str] = None) -> dict[str, Any]:
+    _require_analytics()
+    cid = _case_id(case)
+    # Headline numbers cover other accounts only: the subject's own posts are
+    # the reference record and score 0 by construction.
+    counts = db.fetch_one(
+        f"""SELECT count(*)::int AS labelled,
+                   count(*) FILTER (WHERE l.status = 'classified')::int AS classified,
+                   count(*) FILTER (WHERE {ANY_FLAG})::int AS flagged,
+                   count(DISTINCT l.author_id) FILTER (WHERE {ANY_FLAG})::int AS flagged_authors,
+                   COALESCE(sum(c.view_count) FILTER (WHERE {ANY_FLAG}), 0)::bigint AS flagged_views,
+                   {", ".join(f"count(*) FILTER (WHERE l.is_{k})::int AS {k}" for k in CATEGORIES)}
+            FROM analytics_content_labels l
+            JOIN content_items c ON c.id = l.content_item_id
+            WHERE l.case_id = %s AND NOT (l.attribution = ANY(%s))""",
+        (cid, list(REAL)))
+    others = db.fetch_one(
+        "SELECT count(*)::int AS n FROM content_items "
+        "WHERE case_id = %s AND NOT (attribution = ANY(%s::attribution_t[]))",
+        (cid, list(REAL)))["n"]
+    alerts = db.fetch_all(
+        """SELECT severity, scope, count(*)::int AS n FROM analytics_alerts
+           WHERE case_id = %s AND status = 'open' GROUP BY 1, 2""", (cid,))
+    run = db.fetch_one(
+        """SELECT model, prompt_version, status, started_at, finished_at, items_classified
+           FROM analytics_runs WHERE case_id = %s ORDER BY started_at DESC LIMIT 1""", (cid,))
+    thresholds = {r["category"]: r["score"] for r in db.fetch_all(
+        """SELECT category, (config->>'score')::real AS score
+           FROM analytics_thresholds WHERE scope = 'label'""")}
+    return {**counts, "others": others, "alerts": alerts, "last_run": run,
+            "thresholds": thresholds}
+
+
+@app.get("/api/analytics/daily")
+def analytics_daily(case: Optional[str] = None) -> dict[str, Any]:
+    _require_analytics()
+    cid = _case_id(case)
+    days = db.fetch_all(
+        """SELECT day, posts, disinformation, racism, hate_speech, harassment,
+                  disinformation_rate, racism_rate, hate_speech_rate, harassment_rate,
+                  views_flagged
+           FROM analytics_subject_daily
+           WHERE case_id = %s AND attribution_scope = 'third_party' ORDER BY day""", (cid,))
+    alerts = db.fetch_all(
+        """SELECT scope_key AS day, category, severity, metric, value, threshold
+           FROM analytics_alerts WHERE case_id = %s AND scope = 'subject'
+           ORDER BY scope_key, severity, category""", (cid,))
+    return {"days": days, "alerts": alerts}
+
+
+@app.get("/api/analytics/alerts")
+def analytics_alerts(
+    case: Optional[str] = None,
+    scope: Optional[Literal["subject", "profile"]] = None,
+    category: Optional[Literal["disinformation", "racism", "hate_speech", "harassment"]] = None,
+    severity: Optional[Literal["warning", "critical"]] = None,
+    status: Optional[Literal["open", "acknowledged", "resolved"]] = None,
+) -> list[dict[str, Any]]:
+    _require_analytics()
+    where, params = ["al.case_id = %s"], [_case_id(case)]
+    for col, val in (("scope", scope), ("category", category),
+                     ("severity", severity), ("status", status)):
+        if val:
+            where.append(f"al.{col} = %s")
+            params.append(val)
+    rows = db.fetch_all(
+        f"""SELECT al.id, al.scope, al.scope_key, al.subject_label, al.category,
+                   al.severity, al.metric, al.value, al.threshold,
+                   al.window_start, al.window_end, al.status,
+                   al.sample_item_ids::text[] AS sample_item_ids,
+                   a.handle, a.display_name AS name, a.followers_count AS followers,
+                   a.profile_image_url AS avatar
+            FROM analytics_alerts al
+            LEFT JOIN authors a ON al.scope = 'profile' AND a.id::text = al.scope_key
+            WHERE {" AND ".join(where)}
+            ORDER BY (al.severity = 'critical') DESC,
+                     al.value / NULLIF(al.threshold, 0) DESC NULLS LAST, al.id""", params)
+    for r in rows:
+        if r.get("avatar"):
+            r["avatar"] = r["avatar"].replace("_normal.", "_bigger.")
+    return rows
+
+
+@app.get("/api/analytics/profiles")
+def analytics_profiles(
+    case: Optional[str] = None,
+    category: Category = "any",
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    _require_analytics()
+    cid = _case_id(case)
+    if category == "any":
+        flagged = "(" + " + ".join(f"p.{c}" for c in CATEGORIES) + ")"
+        peak = "GREATEST(" + ", ".join(f"COALESCE(p.max_{c}, 0)" for c in CATEGORIES) + ")"
+    else:
+        flagged, peak = f"p.{category}", f"COALESCE(p.max_{category}, 0)"
+    where = f"p.case_id = %s AND NOT (p.attribution = ANY(%s)) AND {flagged} > 0"
+    params = [cid, list(REAL)]
+    total = db.fetch_one(
+        f"SELECT count(*)::int AS n FROM analytics_profile_summary p WHERE {where}", params)["n"]
+    rows = db.fetch_all(
+        f"""SELECT p.author_id, p.handle, a.display_name AS name, a.is_verified AS verified,
+                   a.profile_image_url AS avatar, p.followers_count AS followers, p.posts,
+                   {", ".join(f"p.{c}, p.{c}_rate" for c in CATEGORIES)},
+                   {flagged}::int AS flagged, {peak} AS peak,
+                   p.first_post_at, p.last_post_at,
+                   (SELECT CASE WHEN bool_or(al.severity = 'critical') THEN 'critical'
+                                ELSE 'warning' END
+                    FROM analytics_alerts al
+                    WHERE al.case_id = p.case_id AND al.scope = 'profile'
+                      AND al.scope_key = p.author_id::text AND al.status = 'open') AS alert
+            FROM analytics_profile_summary p
+            LEFT JOIN authors a ON a.id = p.author_id
+            WHERE {where}
+            ORDER BY {flagged} DESC, {peak} DESC, p.followers_count DESC NULLS LAST, p.author_id
+            LIMIT %s OFFSET %s""", [*params, limit, offset])
+    for r in rows:
+        if r.get("avatar"):
+            r["avatar"] = r["avatar"].replace("_normal.", "_bigger.")
+    return {"total": total, "items": rows}
+
+
+@app.get("/api/analytics/bursts")
+def analytics_bursts(case: Optional[str] = None) -> list[dict[str, Any]]:
+    _require_analytics()
+    rows = db.fetch_all(
+        """SELECT b.id, b.author_id, b.author_handle AS handle, a.display_name AS name,
+                  a.profile_image_url AS avatar, a.followers_count AS followers,
+                  b.target, b.pattern, b.window_start, b.window_end,
+                  b.post_count, b.reply_count, b.item_ids::text[] AS item_ids,
+                  (SELECT max(l.llm_abuse) FROM analytics_content_labels l
+                   WHERE l.content_item_id = ANY(b.item_ids)) AS max_abuse,
+                  (SELECT max(l.harassment) FROM analytics_content_labels l
+                   WHERE l.content_item_id = ANY(b.item_ids)) AS max_harassment
+           FROM analytics_harassment_bursts b
+           LEFT JOIN authors a ON a.id = b.author_id
+           WHERE b.case_id = %s
+           ORDER BY b.post_count DESC, b.window_start""", (_case_id(case),))
     for r in rows:
         if r.get("avatar"):
             r["avatar"] = r["avatar"].replace("_normal.", "_bigger.")
